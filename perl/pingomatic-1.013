@@ -1,0 +1,665 @@
+#!/usr/local/bin/perl -w
+# -*- perl -*-
+
+#
+# $Id: pingomatic,v 1.13 2006/05/02 21:20:10 eserte Exp $
+# Author: Slaven Rezic
+#
+# Copyright (C) 1999-2006 Slaven Rezic. All rights reserved.
+# This program is free software; you can redistribute it and/or
+# modify it under the same terms as Perl itself.
+#
+# Mail: slaven@rezic.de
+# WWW:  http://www.sourceforge.net/projects/srezic
+#
+
+use Event;
+use IO::Pipe;
+use Getopt::Long;
+use Term::ReadKey;
+use Term::ReadLine;
+use Sys::Hostname;
+use strict;
+use vars qw($VERSION @nameserver %pipe);
+
+$VERSION = sprintf("%d.%03d", q$Revision: 1.13 $ =~ /(\d+)\.(\d+)/);
+
+{
+package
+    IO::Pipe::End;
+sub pid {
+    my $me = shift;
+    ${*$me}{'io_pipe_pid'};
+}
+}
+
+######################################################################
+{
+package PingDef;
+
+use constant MAXTIME => 20000;
+
+use vars qw(%try_later);
+
+sub new {
+    my $self = { @_[1..$#_] };
+    $self->{Val} = [];
+    bless $self, $_[0];
+}
+
+sub host { $_[0]->{Host} }
+sub type { $_[0]->{Type} }
+sub active { !$_[0]->{Canceled} }
+
+sub time {
+    my($self, $n, $as_string) = @_;
+    my $timesum = 0;
+    my $count = 0;
+    my $start = $#{$self->{Val}}-$n+1;
+    $start = 0 if ($start < 0) ;
+    for(my $i=$start; $i<=$#{$self->{Val}}; $i++) {
+	$timesum+=$self->{Val}[$i]{Time};
+	$count++;
+    }
+    my $time = ($count ? $timesum/$count : undef);
+    if ($as_string && !defined $time) {
+	"?"
+    } elsif ($as_string && $time == MAXTIME) {
+	"unreach."
+    } else {
+	$time;
+    }
+}
+
+sub add {
+    my($self, $line) = @_;
+    if ($line =~ /icmp_seq=([\d.]+).*time=([\d.]+)/) {
+	my($seq, $time) = ($1, $2);
+## noch nicht korrekt...
+#  	my $last_line = $self->{Val}[$#{$self->{Val}}];
+#  	if (defined $last_line && defined $last_line->{Seq}) {
+#  	    foreach ($last_line->{Seq} .. $seq-1) { # verlorene Pakete
+#  		push @{ $self->{Val} }, {Time => MAXTIME};
+#  	    }
+#  	}
+	push @{ $self->{Val} }, {Seq => $seq,
+				 Time => $time};
+	$self->{Canceled} = 0;
+    } elsif ($line =~ /ret=-1/) {
+	push @{ $self->{Val} }, {Time => MAXTIME}; #XXX
+	$self->{Canceled} = 1;
+    } else {
+	warn "Can't parse $line";
+    }
+    shift @{ $self->{Val} } if (@{ $self->{Val} } > 10);
+}
+
+sub addempty {
+    my($self) = @_;
+    push @{ $self->{Val} }, {Time => MAXTIME}; #XXX
+    shift @{ $self->{Val} } if (@{ $self->{Val} } > 10);
+}
+
+sub canceled {
+    my $self = shift;
+    my $watcher = shift;
+    $self->addempty;
+    $self->{Canceled} = 1;
+    $try_later{$self->{Host}} = $self;
+    $self->{Watcher} = $watcher;
+}
+
+} # package
+######################################################################
+# hostgroups
+
+sub hostgroup_cpan {
+    qw(ftp.gmd.de
+       ftp.gwdg.de
+       ftp.leo.org
+       ftp.mpi-sb.mpg.de
+       ftp.rz.ruhr-uni-bochum.de
+       ftp.uni-erlangen.de
+       ftp.uni-hamburg.de
+       ftp.digital.com
+       ftp.cdrom.com
+       www.perl.org
+       www.cpan.org
+    );
+}
+
+sub hostgroup_freebsd {
+    qw(ftp.cs.tu-berlin.de
+       ftp.freebsd.org
+       ftp.freebsd.de
+       ftp2.freebsd.org
+       ftp3.freebsd.org
+    );
+}
+
+sub hostgroup_linux {
+    qw(www.linux.org www.rpmfind.net www.redhat.com
+       www.suse.de www.mandrake.com);
+}
+
+sub hostgroup_search {
+    qw(www.altavista.com
+       www.altavista.de
+       www.yahoo.com
+       www.infoseek.com
+       www.hotbot.com
+       www.lycos.com
+       www.lycos.de
+       www.dejanews.com
+       search.opentext.com
+       home.netscape.com
+       webcrawler.com
+       netguide.de
+       www.web.de
+       www.fireball.de
+       www.hurra.de
+       suchen.com
+       mserv.rrzn.uni-hannover.de
+    );
+}
+
+sub hostgroup_default {
+    (qw(www.altavista.com
+       www.google.com
+       www.perl.com
+       www.linux.org
+       ftp.perl.org),
+     ['www.sourceforge.net', 'http'],
+     ['www.netscape.com', 'http'],
+     ['www.microsoft.com', 'http'],
+     ['www.freebsd.org', 'http'],
+     ['www.cpan.org', 'http'],
+     ['www.yahoo.com', 'http'],
+     ['www.amazon.com', 'http'],
+     ['www.gnu.org', 'http'],
+     ['ftp.funet.fi', 'http'],
+     ['www.slashdot.org', 'http'],
+     ['www.heise.de', 'http'],
+    );
+}
+
+*hostgroup_normal = *hostgroup_normal = \&hostgroup_default;
+
+######################################################################
+# main
+
+my $hostgroup = "normal";
+my @addhost;
+my $do_ns = 1;
+my $hostfile;
+my $debug;
+my $update = 1;
+my $log;
+my $logfh;
+if (!GetOptions("hosts|hostgroup=s" => \$hostgroup,
+		"hostfile=s" => \$hostfile,
+		"host=s@" => \@addhost,
+		"ns|nameserver!" => \$do_ns,
+		"d|debug!" => \$debug,
+		"update|interval=i" => \$update,
+		"log|logfile=s" => \$log,
+	       )) {
+    require Pod::Usage;
+    Pod::Usage::pod2usage(1);
+}
+
+my @hosts;
+if (defined $hostfile && -r $hostfile) {
+    open(H, $hostfile) or die "Can't open $hostfile";
+    @hosts = read_pingomatic_hosts(\*H);
+    close H;
+} elsif ($hostgroup eq 'empty') {
+    @hosts = ();
+} elsif ($hostgroup ne 'normal') {
+    no strict 'refs';
+    @hosts = &{"hostgroup_" . lc($hostgroup)};
+} elsif (open(H, "$ENV{HOME}/.pingomatic.hosts")) {
+    @hosts = read_pingomatic_hosts(\*H);
+    close H;
+} else {
+    @hosts = hostgroup_default();
+}
+
+push @hosts, map { pingomatic_host($_) } @addhost;
+push @hosts, map { pingomatic_host($_) } @ARGV if @ARGV;
+
+if ($do_ns) {
+    get_nameserver();
+    push @hosts, map { [ $_, "name" ] } @nameserver;
+}
+
+my $term = new Term::ReadLine 'pingomatic';
+
+my %pingdefs;
+
+if ($debug) {
+    open(STDERR, ">/tmp/pingomatic.debug");
+} else {
+    require File::Spec;
+    open(STDERR, ">" . File::Spec->devnull);
+}
+
+my $clearchr;
+if (eval { require Term::Cap }) {
+    my $terminal = Tgetent Term::Cap { TERM => undef, OSPEED => 9600 };
+    $clearchr = $terminal->Tputs("cl");
+}
+if ($clearchr eq '') {
+    # XXX MSWin32: use cls instead?
+    $clearchr = `clear`;
+}
+
+foreach my $host (@hosts) {
+    new_ping($host);
+}
+
+if ($log) {
+    my $log_exists = -e $log;
+    open $logfh, ">>$log" or die "Can't append to $log: $!"; # XXX STDERR is redirected already
+    my $oldfh = select($logfh); $| = 1; select($oldfh);
+    print_log_header() if not $log_exists;
+}
+
+show_ping_stat();
+
+# start timers...
+my $update_w =
+    Event->timer(desc => "update",
+		 interval => $update,
+		 cb => \&show_ping_stat,
+		 );
+
+Event->timer(
+	     interval => 20,
+	     cb => \&try_later,
+	    );
+
+Event->io(
+	  fd => \*STDIN,
+	  poll => 'r',
+	  cb => \&handle_key,
+	  repeat => 1,
+	 );
+
+ReadMode 3;
+
+Event::loop();
+
+sub print_log_header {
+    print $logfh join("\t", "Time", map { $pingdefs{$_}->host } sort keys %pingdefs) . "\n";
+}
+
+sub get_ping_line {
+    my $e = shift;
+    my $got = $e->got;
+    my $fd = $e->w->fd;
+    my $host_type = $e->w->desc;
+    my $pingdef = $pingdefs{$host_type};
+    if ($got eq "r") {
+	if (eof $fd) {
+	    $pingdef->canceled($e->w);
+	    $e->w->stop;
+	} else {
+	    my $line = scalar <$fd>;
+	    chomp $line;
+	    $pingdef->add($line);
+	}
+    } else {
+	$pingdef->addempty;
+    }
+}
+
+sub show_ping_stat {
+    my $res = '';
+    my %host2time;
+    foreach my $pingdef (map {
+	$_->[1]
+	} sort {
+	    $a->[0] <=> $b->[0]
+	} map {
+	    [$_->time(10), $_];
+	} values %pingdefs) {
+	$host2time{$pingdef->host} = $pingdef->time(1, "as_string");
+	$res .= sprintf
+	    "%-30s %-6s %-1s %-10s %-10s\n",
+	    $pingdef->host,
+	    (defined $pingdef->type ? $pingdef->type : "ping"),
+	    $pingdef->active ? 'x' : ' ',
+	    $pingdef->time(1, "as_string"),
+	    $pingdef->time(10, "as_string");
+    }
+
+    my $statusline = "*** " . scalar(localtime) . " update: $update s ***\n";
+    print "$clearchr$statusline$res";
+
+    if ($logfh) {
+	print $logfh join("\t", epoch2isodate(time), map { $host2time{$pingdefs{$_}->host} } sort keys %pingdefs) . "\n";
+    }
+}
+
+sub get_nameserver {
+    @nameserver = ();
+    if (open(NS, "/etc/resolv.conf")) {
+	while(<NS>) {
+	    s/#.*//g;
+	    if (/nameserver\s+(.*)\s*$/) {
+		push @nameserver, $1;
+	    }
+	}
+	close NS;
+    } else {
+	warn "Can't open resolv.conf\n";
+    }
+    if (!@nameserver) {
+	warn "Can't get any nameserver\n";
+    }
+}
+
+sub try_later {
+#XXX geht nicht
+#     foreach my $host (keys %PingDef::try_later) {
+# 	if (fork == 0) {
+# 	    system("ping", "-c", "1", $host);
+# 	    if (!$?) {
+# 		my $pingdef = $PingDef::try_later{$host};
+# 		$pingdef->{Canceled} = 0;
+# 		$pingdef->{Watcher}->start;
+# 		delete $PingDef::try_later{$host};
+# 	    }
+# 	}
+#     }
+}
+
+sub handle_key {
+    my $e = shift;
+    my $got = $e->got;
+    if ($got eq 'r') {
+	if (defined(my $key = ReadKey(-1))) {
+	    my $update_changed;
+	    if ($key =~ /^[qx]$/) {
+		kill -9 => $$;
+		exit(0); # for other OSes
+	    } elsif ($key eq '-' and $update > 1) {
+		$update--;
+		$update_changed++;
+	    } elsif ($key eq '+') {
+		$update++;
+		$update_changed++;
+	    } elsif ($key =~ /^\d$/ and $key > 0) {
+		$update = $key;
+		$update_changed++;
+	    } elsif ($key eq 'a') {
+		add_host();
+	    }
+
+	    if ($update_changed) {
+		$update_w->interval($update);
+	    }
+	}
+    }
+}
+
+sub add_host {
+    my @stopped;
+    foreach (Event::all_running()) {
+	$_->stop;
+	push @stopped, $_;
+    }
+    ReadMode 0;
+    my $OUT = $term->OUT || \*STDOUT;
+    print $OUT "\n";
+    my $line = $term->readline("add host: "); # Can't use "\n" in prompt
+    if (defined $line and $line !~ /^\s*$/) {
+	my($host, $type) = split /[\t:]/, $line;
+	new_ping([$host, $type]);
+    }
+    ReadMode 3;
+    $_->start foreach @stopped;
+}
+
+sub new_ping {
+    my $host = shift;
+    my $type;
+
+    if (ref $host eq 'ARRAY') {
+	($host, $type) = @$host;
+	$type = undef if defined $type && $type =~ /^\s*$/;
+    }
+
+    my $host_type = $host . (defined $type ? ":$type" : "");
+
+    my $pipe = $pipe{$host_type} = new IO::Pipe;
+    if (!defined $type || $type eq 'ping') {
+	my @cmd;
+	if ($^O eq 'solaris') {
+	    @cmd = ('ping', '-s', $host);
+	} else {
+	    @cmd = ('ping', $host);
+	}
+	$pipe{$host_type}->reader(@cmd);
+    } else {
+	my $pid = fork;
+	if (!$pid) {
+	    $pipe->writer();
+	    $pipe->autoflush(1);
+	    require Net::Ping;
+	    my($port, $protocol) = $type =~ m{^(.*)/(.*)$};
+	    if (!defined $port) {
+		$port = $type;
+	    }
+	    if (!defined $protocol) {
+		$protocol = "tcp";
+	    }
+	    my $p = Net::Ping->new($protocol);
+	    if ($type =~ /^\d+/) {
+		$p->{port_num} = $port;
+	    } else {
+		$p->{port_num} = getservbyname($port, $protocol);
+	    }
+	    $p->hires();
+	    my $seq = 0;
+	    while(1) {
+		my($ret, $duration, $ip) = $p->ping($host, 10);
+		if ($ret) {
+		    $duration = sprintf "%.3f ms", 1000 * $duration;
+		    print $pipe <<EOF;
+answer from $ip: icmp_seq=$seq ttl=??? time=$duration
+EOF
+                }
+		sleep(1);
+	    }
+	    die "Never reached";
+	}
+	$pipe->reader;
+    }
+
+    my $pingdef = new PingDef Host => $host, Type => $type;
+    $pingdefs{$host_type} = $pingdef;
+
+    Event->io(
+	      fd => $pipe,
+	      poll => 'r',
+	      timeout => 5,
+	      repeat => 1,
+	      desc => $host_type,
+	      cb => \&get_ping_line,
+	      );
+
+}
+
+sub pingomatic_host {
+    my $line = shift;
+    if (my($host, $type) = split /[\t:]/, $line) {
+	[$host, $type];
+    } else {
+	$line;
+    }
+}
+
+sub read_pingomatic_hosts {
+    my $fh = shift;
+    my @hosts;
+    while(<$fh>) {
+	chomp;
+	next if /^$/;
+	next if /^\s*\#/;
+	if (/^\@(.*)\@$/) {
+	    no strict 'refs';
+	    push @hosts, &{"hostgroup_" . lc($1)};
+	} else {
+	    push @hosts, pingomatic_host($_);
+	}
+    }
+    @hosts;
+}
+
+sub epoch2isodate {
+    my $time = shift;
+    my @l = gmtime $time;
+    sprintf("%04d-%02d-%02dT%02d:%02d:%02dZ",
+	    $l[5]+1900, $l[4]+1, $l[3],
+	    $l[2],      $l[1],   $l[0]);
+}
+
+__END__
+
+=head1 NAME
+
+pingomatic - multiple ping to a number of hosts
+
+=head1 DESCRIPTION
+
+This utility pings to a number of hosts in parallel.
+
+=head2 OPTIONS
+
+=over 4
+
+=item -hosts hostgroup
+
+Use a predefined host group. Predefined host groups are: C<cpan>,
+C<freebsd>, C<linux>, and C<search>.
+
+=item -hostfile filename
+
+Use another file with host names instead of the default
+C<~/.pingomatic.hosts>.
+
+=item -host hostname
+
+=item -host hostname:port
+
+=item -host hostname:port/protocol
+
+Add the named hostname (optionally with a port in numerical or named
+form) to the list of hosts. This option may be specified multiple
+times. I<protocol> is also optional and may be something like C<tcp>
+or C<icmp>.
+
+=item -ns
+
+Add the locally configured name servers from C</etc/resolv.conf> to
+the list of hosts. This is the default, use C<-nons> to remove the
+name servers.
+
+=item -d | -debug
+
+Turn debugging on. Debug info is saved to C</tmp/pingomatic.debug>.
+
+=item -interval seconds | -update seconds
+
+Specify an interval in seconds between sending pings. Default is one
+second.
+
+=item -log file
+
+Write a tab separated logfile (append if it already exists) with the
+per-host and per-interval ping values.
+
+=back
+
+=head2 KEYS
+
+While the script is pinging, the user can use the following keys:
+
+=over 4
+
+=item a
+
+Add interactively another host to the list. To check for a specific
+port, use I<host>:I<port>.
+
+=item +
+
+Add one second to the current update interval. The default update
+interval is one second.
+
+=item -
+
+Subtract one second from the current update interval.
+
+=item Ctrl-C
+
+Terminate the script.
+
+=back
+
+=head1 THE .PINGOMATIC.HOSTS FILE
+
+Each line in the F<~/.pingomatic.hosts> file can consist of a I<host>,
+a I<host>:I<port>, or a I<host>:I<port>/I<protocol> specification.
+
+Empty lines and lines beginning with a '#' are ignored.
+
+=head1 IMPLEMENTATION DETAILS
+
+If no port is specified or "ping" is used as a port name, then the
+system command C<ping> is used. This is preferable because otherwise
+pingomatic has to run as root. In all other cases L<Net::Ping> is
+used.
+
+=head1 EXAMPLES
+
+Here's an example (which probably only works on Linux) to ping all
+hosts with a current tcp connection from our host:
+
+    cat /proc/net/tcp | sed -e '1 d' -e 's/^ *//' | cut -d" " -f3 | grep -v "^00000000" | cut -d":" -f1 | perl -nle '@x = /(..)/g; print join(".", reverse(map { hex($_) } @x));' > /tmp/hosts
+    pingomatic /tmp/hosts
+
+=head1 README
+
+This utility pings to a number of hosts in parallel.
+
+=head1 FILES
+
+    ~/.pingomatic.hosts - A list of host names to ping. The file should
+    consist of hostnames or hostname:port specifications, one per line.
+
+=head1 PREREQUISITES
+
+Event, Term::ReadKey.
+
+=head1 OSNAMES
+
+only tested on Linux, FreeBSD and Solaris
+
+=head1 SCRIPT CATEGORIES
+
+Networking
+
+=head1 AUTHOR
+
+Slaven Rezic <slaven@rezic.de>
+
+=head1 SEE ALSO
+
+ping(1).
+
+=cut
+
+

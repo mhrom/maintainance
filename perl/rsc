@@ -1,0 +1,1931 @@
+#!/usr/bin/perl -w
+
+# = HISTORY SECTION =====================================================================
+
+# ---------------------------------------------------------------------------------------
+# version |  date  | author | changes
+# ---------------------------------------------------------------------------------------
+# 2.01    |30.12.99| ets    | added more CPAN specific POD sections;
+#         |        | ets    | first CPAN release;
+# 2.00    |16.09.99| ets    | translated POD into English;
+#         |28.12.99| ets    | removed private module access;
+#         |        | ets    | bugfix: option -nocopyright took no effect;
+#         |        | ets    | replaced calls of bug() by Carp::confess();
+#         |        | ets    | made handling of non CPAN module Admin::File::Lock optional,
+#         |        |        | depending on its availability;
+#         |        | ets    | added usual option checks;
+#         |        | ets    | removed unused temporary directory and file handling;
+#         |        | ets    | translated remaining messages into English;
+#         |30.12.99| ets    | added CPAN script categories;
+#         |        | ets    | replaced Admin::Oen::xxx() calls by internal code because
+#         |        |        | Admin::Oen is no public module;
+# 1.12    |30.06.99| ets    | class file2handle: added methods READ() and WRITE();
+#         |        | ets    | target script is forced now to run under perl 5.005 at least;
+# 1.11    |24.06.99| ets    | bugfix in own open;$main::_runningUnderRSC;
+#         |        | ets    | the tunneled script can now check if it runs under rsc
+#         |        |        | control, because rsc sets $main::_runningUnderRSC now;
+#         |        | ets    | bugfix in localized stat() and lstat() calls;
+#         |        | ets    | modified file test operator translation slightly;
+#         |25.06.99| ets    | chmod() and chown() are overridden now;
+# 1.10    |25.03.99| ets    | completed POD once more ...;
+#         |        | ets    | removed forgotten debug traces;
+#         |        | ets    | bugfixes in directive handling (complex conditions);
+# 1.09    |24.03.99| ets    | target host is no longer pinged in tracelevel 1;
+#         |        | ets    | added new tracelevel 256;
+#         |        | ets    | added new directive #!TRACE#<level condition>#;
+#         |        | ets    | directive can now contain a combined condition;
+#         |        |        | (#TRACE#<level>[\+|\|<level>+]#);
+#         |        | ets    | new option -lresponse;
+#         |        | ets    | added trace to show tunneled @ARGV;
+# 1.08    |19.03.99| ets    | added a restriction hint: interaction;
+#         |23.03.99| ets    | implemented real redirection of Storable::retrieve();
+# 1.07    |19.03.99| ets    | temporary files now named process specifically;
+#         |        | ets    | calls of _rscFiletest() are now generated WITH parantheses;
+# 1.06    |19.03.99| ets    | added target script support for Getopt::ArgvFile;
+#         |        | ets    | rsc now checks the target host first by ping;
+#         |        | ets    | documented default response file handling;
+# 1.05    |17.03.99| ets    | switched from Admin::Oen::response() to
+#         |        |        | Getopt::ArgvFile::argvFile();
+#         |        | ets    | completed POD;
+#         |18.03.99| ets    | improved AUTOLOAD();
+# 1.04    |15.03.99| ets    | added controlable remote traces;
+#         |        | ets    | added really overloaded stat() and lstat();
+#         |        | ets    | overloaded file test operators, stat() and lstat() can
+#         |        |        | handle the special argument '_' correctly now;
+#         |        | ets    | improved by running a hpf script;
+# 1.03    |12.03.99| ets    | added new option -interpreter;
+#         |        | ets    | completed POD;
+# 1.02    |10.03.99| ets    | added File::Path::mkpath() localization;
+#         |11.03.99| ets    | added AUTOLOAD() for non overriden file access functions;
+#         |        | ets    | added file test operator localization;
+#         |        | ets    | extended POD;
+#         |        | ets    | fixes and improvements;
+# 1.01    |09.03.99| ets    | the first version working with "serverspace -mode scan";
+# 1.00    |09.03.99| ets    | new.
+# ---------------------------------------------------------------------------------------
+
+# = POD SECTION =========================================================================
+
+=head1 NAME
+
+rsc - "tunnels" another Perl script
+
+=head1 SCRIPT CATEGORIES
+
+Networking
+UNIX/System_administration
+
+=head1 VERSION
+
+This documentation describes version B<2.01>.
+
+=head1 DESCRIPTION
+
+=head2 Overview
+
+B<rsc> executes a (Perl!-)Script on another host. Neither this target script,
+nor B<rsc> or parts of it, nor input or output files I<have> to be located
+on the target machine.
+
+There's no need to prepare the target system in any I<special> way. No special
+deamon has to run there, only perl 5.005 or higher with a few modules installed
+and an rsh deamon are required. Additionally, this remote perl installation needs
+installations of the modules the executed script wants to use.
+
+If the work is done, B<rsc> cleans up the target host even if it dies
+accidentially (or) by a signal. No zombie in the process list, no remaining file
+on disk (except of those which might be written by the executed script, of course).
+
+Communication is done I<completely> via STDIN, STDOUT and STDERR. (This
+makes it easy to establish a secure connection between the initiating
+and the target machine if B<ssh> is installed. Encryption will be done
+automatically.)
+
+Ideally, the called script has not to be prepared for this kind of execution.
+Every script that runs standalone should be a good candidate for tunneling by
+B<rsc> - well, in fact, there really I<are> I<restrictions> which are documented
+in section "I<Restrictions and Problems>".
+
+=head2 Why doing jobs this way?
+
+Of course, every script can be called I<directly> or via B<rsh> if you need
+remote execution. But in reality, this is difficult sometimes:
+
+=over 4
+
+=item In a network I saw,
+
+hosts for administration purposes were especially installed and prepared.
+A host inside the cell could access all other hosts in the net, but
+only cell hosts could access other cell hosts.
+
+Important scripts normally were located inside the cell to hide them from
+"normal" users and were intended to be executed only inside the cell. But
+some day there was a need to execute scripts I<outside> the cell - but still
+without making them available there.
+
+=item Mounts between servers
+
+are a real problem if NFS becomes unavailable. That's why administrators of a
+certain network decided to forbid such cross mounts. But now, if a script should be
+run on several servers and reads or produces data in a shared directory, there is
+a new problem because of the missed mounts, and finding a real good solution becomes
+difficult.
+
+=back
+
+B<rsc> was designed as a solution to this kind of problem.
+
+=head2 How does it work?
+
+Well, this is hidden in tricky code. This section provides an overview of the used
+techniques. If it sounds too complicated, feel free to skip it and simply use the tool.
+
+1) The target script is analyzed and modified I<slightly>. Default option files are
+   solved I<locally> if a call of B<(Getopt::ArgvFile::)argvFile()> is detected.
+
+2) B<rsc> starts a remote process which you can imagine a kind of a I<server>.
+
+3) The prepared target script is sent to the server.
+
+4) The server executes the received target script on the remote machine. File
+   handling is redirected to the I<initial> process on the I<initial> system
+   if it works in directories the user predeclared as "local". (To do so, the
+   I<remote> process called a server before takes control and acts as a I<client>
+   performing operations on the initial system via the initial process which acts
+   as a I<server> in this step. Just to confuse you. ;-)
+
+5) If the target script is executed completely, remote and initial process
+   terminate transparently without leaving zombies or helper files on the target
+   system.
+
+=head2 Does it work for my script too?
+
+There is a real chance. That's why I decided to publish this script on CPAN.
+Nevertheless, it was designed to tunnel a I<certain> (large) script which is
+tunnelled successfully. The algorithm is complex and I<has> restrictions, so
+there is no guarantee for other scripts to be executable this way too. Please
+check out the I<NOTES> section.
+
+=head1 SYNOPSIS
+
+rsc [<rsc options>] -- <target system> <target script> [<target script options>]
+
+Please note that "--" is absolutely necessary to mark where B<rsc> options are
+complete. Without this flag, B<rsc> would read the target script options as well
+(and remove them from the command line).
+
+If the target script uses I<default option files> by calling I<(Getopt::ArgvFile::)argvFile()>,
+B<rsc> takes care of them automatically. They will be resolved on the I<initial> side,
+and B<rsc> will pass them to the target script using @ARGV.
+
+
+=head2 Options
+
+All options can be abbreviated uniqly.
+
+=over 4
+
+=item -help
+
+displays an online help and terminates the script.
+
+=item -interpreter <interpreter>
+
+The B<perl> which should be executed on the target machine to start the target script.
+Without such a hint, B<rsc> tries to evaluate the target scripts "shebang" line.
+
+To make the target script runnable under B<rsc> control, the passed interpreter should
+be a perl of version 5.003 or above, ideally 5.005 or above. The is no need of built in
+multitheading support. The modules I<Storable>, I<Symbol> and I<IPC::Open2> have to be
+installed.
+
+=item -localize <directory>
+
+redirects file access to this directory or any subdirectory from the target machine back
+to the initial system. This is useful if the path is (under your account) not to be found
+on the target host or if access to it should be avoided on the target system.
+
+Example: If the target script checks a directory for existence which is located under the
+specified path, B<rsc> redirects this file check transparently a way that it is performed
+on the I<initial> system. The check result will be passed to the target script which is
+running on the target system.
+
+This option may be used multiply.
+
+=item lresponse
+
+Usually, B<rsc> passes all target script options unmodified to the target script. With this
+option set, B<Getopt::ArgvFile::argvFile()> is called on the I<initial> side so that option
+files are solved I<there>.
+
+Example:
+
+  If the target options include an option file hint like
+  "-a -b @optionFile", it usually would be passed to the
+  target script on the target machine, where "optionFile"
+  would be searched and resolved. Now, possibly this file
+  is located in a path not to be found on the target system.
+  No problem, use -lresponse, and rsc will solve the option
+  file on the initial system BEFORE the results are passed
+  to the target side.
+
+Please see B<Getopt::ArgvFile> for details about option files.
+
+=item -nocopyright
+
+suppresses the copyright message;
+
+=item -noinfo
+
+supresses runtime informations;
+
+=item -nowarn
+
+supresses warnings;
+
+=item -quiet
+
+a shortcut for "-nocopyright -noinfo -nowarn": all non critical runtime messages are suppressed;
+
+=item -trace [<level>]
+
+activates traces of the specified level. You may use the environment variable SCRIPTDEBUG
+alternatively.
+
+Note: certain levels I<increase> the amount of data transfered between the involved machines
+and may slow down the operation therefore.
+
+Stufen:
+
+=over 20
+
+=item one (1)
+
+The target script is not tunnelled but reported on STDOUT in its final generated represantation.
+One may redirect this to a file which can be executed on the target system manually, e.g.
+under debugger control.
+
+The behaviour of the generated script can be controled by level 256.
+
+=item two (2)
+
+This level is currently not in operation.
+
+=item four (4)
+
+traces everything the remote process sends to the initial side.
+
+=item eight (8)
+
+reports running local actions.
+
+=item sixteen (16)
+
+reports current remote actions.
+
+=item thirtytwo (32)
+
+traces everything the initial process sends to the target side.
+
+=item sixtyfour (64)
+
+traces code executed remotely.
+I<These traces may be incomplete, depending on the target script structure.>
+
+=item hundredtwentyeight (128)
+
+activates hint messages pointing to function calls in the remote script which should
+better be redirected to the initial machine. See the I<NOTES> section for details.
+
+=item twohundredfiftysix (256)
+
+if you choose trace level 1 to execute the result on the target system yourself,
+the generated script will still iinteract with a "local" process via STDIN and SDOUT.
+Because the initial process is now I<you>, and I<you> are the one controling STDIN
+and STDOUT, I<you> have to answer the script. This may become nerveracking ... To
+help you, level 256 activates I<automatic answers> for the following operations:
+opening, closing, checking (, locking and releasing) of a file on the initial side
+are automatically flagged as I<successfull> as well as making directories by I<mkpath()>.
+
+=back
+
+Levels are combined by addition. To use levels 1 I<and> 4, enter a level of 5. (Internally,
+combination is done bitwise, so if you use a random level, results depend from set bits of
+existing level numbers.)
+
+ Examples:
+
+  -trace 1						# 1
+  -trace 2						# 2
+  -trace 3						# 1 and 2
+  -trace 4						# 4
+  -trace 5						# 1 and 4
+  -trace 6						# 2 and 4
+  -trace 7						# 1, 2 and 4
+
+=back
+
+=head2 Option files
+
+Options may be loaded from files where they are stored exactly as you write them in the
+command line, but may be spread to several lines and extended by comment lines which start
+with a "#" character. To mark an option file in the commandline, simply enter its (path and)
+name prededed by a "@" character.
+
+Option files may be nested. To avoid endless recursion, every option file is resolved only
+the first time it is detected.
+
+The script also takes care of a I<Default option file>.
+
+=head1 RETURN VALUES
+
+
+=head1 ENVIRONMENT VARIABLES
+
+=over 4
+
+=item SCRIPTDEBUG
+
+may be set to a numeric value to activate certain trace levels. You can use option I<-trace>
+alternatively. The several levels are described with this option.
+
+=back
+
+=head1 NOTES
+
+The concept of B<rsc> is new and only proved with a few scripts. (Nevertheless, proved
+successfully.) This is why I still call it alpha software which will grow for a certain
+period with every additionally tunnelled script. Please send a message if you see a way to
+improve it or anything does not work.
+
+This section describes both the ways of implementation and known problems.
+
+=head2 Implementation
+
+To work on another system, you need a kind of I<server> to operate on your request.
+B<rsc> initially uses B<rsh> which can usually be found on every UNIX system around,
+and starts a short Perl script remotely. This first remote script works as follows:
+it receives the target task (as code and additional data) using a minimal protocol.
+After a startup signal, it translates the received code and executes it. From this
+point on, all operations are determined by this received and now running code, which
+communicates with the initial process on the initial machines which acts as a server now.
+This is possible because it was manipulated by the same initial process before it was
+sent to the remote side. That is why this concept offers a wide range of data transfer
+and remote control - the I<initial process> (which is in fact B<rsc>) prepared both
+sides and did it on the fly.
+
+This principle is the base concept of B<rsc>. Thanks to perl and the work of certain
+module authors, namely B<Storable>, the code which performes it is significantly shorter
+than my description above.
+
+To implement this concept, B<rsc> uses a number of special Perl features. The original
+target script code is modified a way that it can act as a client which can delegate
+file access to the initial process if necessary. After modification, it is sent to the
+installed remote process. The modification is done using the following features:
+
+=over 4
+
+=item tie()
+
+File access to directories in a path specified by option I<-localize> should be
+redirected to the initial machine. To enforce this behaviour, B<rsc> overwrites
+B<open()> a way that it checks a passed file name for its path and generates a 
+tied "handle" instead of a real one if necessary. This tied handle is an object
+of a small special class and works a way that all access to it is redirected to
+method calls of the tied class. These methods send commands via STDOUT to the
+server process acting at the initial side, which performs the file access I<there>
+and sends results back to the target side where the methods receive it via STDIN.
+
+Literature note: See "perldoc perltie", "Programming Perl" and "Advanced Perl
+Programming" for details about B<tie()>.
+
+=item Overidden functions
+
+The overiding of B<open()> was already mentioned in the section about B<tie()> usage.
+Other functions need overiding, too, because they are working on file handles but
+are not integrated into I<TIEHANDLE> - currently these are B<stat()>, B<lstat()>,
+B<chmod()> and B<chown()>. So the overidden versions can work with the tied handles, too.
+
+And there are still more which are I<not> currently overidden yet but should be done,
+these are B<opendir()>, B<readdir()>, B<closedir()>, B<eof>, B<ioctl()>, B<fcntl()>,
+B<fileno()> and B<chdir()>. The reason overidden versions are currently not there
+is simply that nobody used it in tunneled script until now. They should be added
+on request.
+
+=item Replaced functions
+
+There are cases when a redirection to the initial machine cannot be implemented via B<tie()>.
+File check operators, for instance, currently cannot be overridden like B<open()>
+or B<close()>, nor are they covered by I<TIEHANDLE>. That is why B<rsc> I<replaces>
+them by calls of a special functions which redirects file access as necessary.
+
+Without further details, here comes a list of more replaced functions which may be extended
+if necessary: B<File::Path::mkpath>. (The module B<Admin::File::lock>, if available, is
+overridden by a self defined subclass a way that its objects can act tunnelled as expected,
+this module is an internal wrapper around B<File::Lockf> and not currently published on CPAN.)
+
+=back
+
+=head2 Restrictions and Problems
+
+The following list is surely incomplete, but this is what I currently know. There are
+workarounds, but unfortunately they often break the concept of an "unprepared target
+code".
+
+B<Implementation>
+
+B<rsc> cannot be used with I<any> script. This restriction is caused by the way of
+implementation:
+
+=over 4
+
+=item rsc needs to run under perl 5.005 or above.
+
+Earlier versions do not provide the necessary features.
+
+=item A script which already uses tricks of rsc cannot be tunneled.
+
+Obviously, the same trick cannot be used twice. That means that if the target script
+code overrides perl functions which are overridden by B<rsc> as well, or uses B<tie()>
+on handles B<rsc> reclaims for itself, tunneling becomes a real challenge.
+
+=item Code replacements depend on style.
+
+Function replacements are done by pattern matching. Function calls not matching expected
+calling styles may remain undetected and unreplaced and could cause an unexpected behaviour
+when executed.
+
+These are the assumptions made: File check operators are expected at line start, after an
+opening paranthesis or after a whitespace. They are I<unexpected> before a closing bracket
+("}"). Workaround if replacements fail: Modify the target script and use interpolated strings
+as file parameter, they should be detected correctly.
+
+=item Actions in used modules
+
+mostly I<cannot> be redirected to the initial machine because B<rsc> cannot see and modify
+the code for them which is hidden in the modules. This is true for both plain Perl and C
+modules.
+
+Exeption: if a file is opened in the I<main> script and tied by B<rsc>, all functions which
+are wrapped by I<TIEHANDLE> (B<close()>, B<getc()>, <>, B<read()>, B<sysread()>, B<syswrite()>
+and B<print()>) should I<work> even in C modules which use the Perl API.
+
+=item Files opened in modules
+
+cannot be redirected by B<rsc> for the same reasons. Examples are B<Storable::store()> and
+B<Storable::retrieve()>.
+
+Workaround: These calls have to be wrapped by B<rsc>. For B<Storable::store()> and
+B<Storable::retrieve()>, this wrapping is already implemented.
+
+=item Interaction
+
+cannot be fully provided yet. For instance, I found no way to make a remotley working texteditor
+be usable via B<rsc>.
+
+=back
+
+B<State of development>
+
+=over 4
+
+=item Overloading
+
+There are more candidates for overriding:
+
+  eof(), fileno(),
+  ioctl(), fcntl(),
+  chdir(), opendir(), readdir(), closedir(),
+
+Currently, all calls of them are performed unmodified (remotely). This is even true if
+a call of B<chdir()> leads the script to a directory in a path specified by I<-localize>.
+
+The tunneling of directory handling is an open question. Is it useful? Consequent tunneling
+here in fact means to install a virtual mount point. On teh other hand, it would fit the
+initial design targets of B<rsc>. Ideas are welcome.
+
+=item select()
+
+Reading or writing files via this function is currently not possible. (I am speaking about
+the select(<vector>, <vector>, <vector>, [<timeout>]).)
+
+=back
+
+B<Perl bugs>
+
+A third group of problems is unfortunately caused by bugs in the current perl version. So
+teh following may be difficult:
+
+=over 4
+
+=item Using a handle multiply
+
+if the connected files are located in pathes specified by I<-localize>.
+
+Workaround: sorry, use different handles.
+
+=item redirected handles passed to functions in C modules
+
+According to "Advanced Perl Programming", C modules should delegate access to a tied handle
+transparently to the specified "replacement function". Unfortunately, this does not work (or
+not everytime).
+
+Workaround: adding B<rsc> wrappers. If this is impossible, there may be alternative functions
+using file names instead of handles which I<can> be wrapped - e.g., you may use
+B<Storable::store()> and B<Storable::retrieve()> instead of B<Storable::store_fd()> and
+B<Storable::retrieve_fd()>. B<Storable::store()> and B<Storable::retrieve()> are already
+wrapped by B<rsc>.
+
+=back
+
+=head2 Runtime control
+
+A script can detect if it is currently executed under B<rsc> control by checking
+$main::_runningUnderRSC.
+
+=head2 Troubleshooting
+
+Increase the trace level step by step. Note the possibilities given by level 1.
+
+=head2 Generating help
+
+The script description is stored I<inside> the script in POD and may be transformed into various
+formats by the usual converters like B<pod2man>, B<pod2html> etc.
+
+=head1 FILES
+
+=head2 Default option file
+
+At startup time, the script searches for a file I<.rsc> in its own installation directory (the
+path used to call it) and automatically resolves it as an I<option file>. Section "I<Option files>"
+gives you a description of the format used there.
+
+You can overide an option in the default file by using it another way in the script call.
+
+=head1 EXAMPLE
+
+  > rsc -interpreter /usr/local/perl5.005/bin/perl \
+    -localize /pro/security/etc -- \
+    target host \
+    targetScript /opt/security/bin/check secrets
+
+=head1 PREREQUISITES
+
+perl5.005
+
+Storable
+Net::Ping
+Convert::UU
+Getopt::Long
+Getopt::ArgvFile
+
+=head1 COREQUISITES
+
+B<rsc> benefits from a special locking module C<Admin::File::Lock> which is currently
+not available on CPAN but should be published soon (under the "File::" path, of course).
+The benefit is the ability to tunnel code using this module, so if you do not have the
+module installed, your scripts do probably not use it and miss nothing.
+
+=head1 OSNAMES
+
+sunos
+solaris
+linux
+
+=head1 INSTALLATION HINTS
+
+You may have to modify the shebang line (which points to the perl binary).
+
+=head1 README
+
+B<rsc> executes a (Perl!-)Script on another host. Neither this target script,
+nor B<rsc> or parts of it, nor input or output files I<have> to be located
+on the target machine.
+
+There's no need to prepare the target system in any I<special> way. No special
+deamon has to run there, only perl 5.005 or higher with a few modules installed
+and an rsh deamon are required. Additionally, this remote perl installation needs
+installations of the modules the executed script wants to use.
+
+If the work is done, B<rsc> cleans up the target host even if it dies
+accidentially (or) by a signal. No zombie in the process list, no remaining file
+on disk (except of those which might be written by the executed script, of course).
+
+Communication is done I<completely> via STDIN, STDOUT and STDERR. (This
+makes it easy to establish a secure connection between the initiating
+and the target machine if B<ssh> is installed. Encryption will be done
+automatically.)
+
+Ideally, the called script has not to be prepared for this kind of execution.
+Every script that runs standalone should be a good candidate for tunneling by
+B<rsc> - well, in fact, there really I<are> I<restrictions> which are documented
+in the manual.
+
+=head1 SEE ALSO
+
+=head1 AUTHOR
+
+Jochen Stenzel (perl@jochen-stenzel.de)
+
+Special thanks to Holger Pfaff for his very great help in
+this projects brainstorming and software testing!
+
+=head1 COPYRIGHT
+
+Copyright (c) 1999 Jochen Stenzel. All rights reserved.
+
+This program is free software, you can redistribute it and/or modify it
+under the terms of the Artistic License distributed with Perl version
+5.00503 or (at your option) any later version. Please refer to the
+Artistic License that came with your Perl distribution for more
+details.
+
+The Artistic License should have been included in your distribution of
+Perl. It resides in the file named "Artistic" at the top-level of the
+Perl source tree (where Perl was downloaded/unpacked - ask your
+system administrator if you dont know where this is).  Alternatively,
+the current version of the Artistic License distributed with Perl can
+be viewed on-line on the World-Wide Web (WWW) from the following URL:
+
+      http://www.perl.com/perl/misc/Artistic.html
+
+=head1 DISCLAIMER
+
+This software is distributed in the hope that it will be useful, but
+is provided "AS IS" WITHOUT WARRANTY OF ANY KIND, either expressed or
+implied, INCLUDING, without limitation, the implied warranties of
+MERCHANTABILITY and FITNESS FOR A PARTICULAR PURPOSE.
+
+The ENTIRE RISK as to the quality and performance of the software
+IS WITH YOU (the holder of the software).  Should the software prove
+defective, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR OR
+CORRECTION.
+
+IN NO EVENT WILL ANY COPYRIGHT HOLDER OR ANY OTHER PARTY WHO MAY CREATE,
+MODIFY, OR DISTRIBUTE THE SOFTWARE BE LIABLE OR RESPONSIBLE TO YOU OR TO
+ANY OTHER ENTITY FOR ANY KIND OF DAMAGES (no matter how awful - not even
+if they arise from known or unknown flaws in the software).
+
+Please refer to the Artistic License that came with your Perl
+distribution for more details.
+
+=cut
+
+# = CODE SECTION =========================================================================
+
+# set version and responsibles mail address
+$VERSION=$VERSION="2.01";
+my ($developerName, $developer)=('J. Stenzel', 'ets@egnetz.uebemc.siemens.de');
+
+# pragmas
+use strict;
+
+# load standard modules
+use Carp;
+use Symbol;
+use Storable;
+use IPC::Open3;
+use FileHandle;
+use File::Path;
+use Getopt::Long;
+use Net::Ping 2.02;                        # versions before 2.02 do not work!
+use Getopt::ArgvFile qw(argvFile);
+use Convert::UU;
+
+# load inhouse modules, if possible
+# use Admin::Oen 1.13;		           # common OEN routines
+my $adminFileLockAvailable=1 if eval 'require Admin::File::Lock';   # file locking management;
+
+# declare globals
+my (%options, %callData, %response);
+
+# get options
+GetOptions(\%options,
+                      "help",              # online help, usage;
+                      "interpreter=s",     # target script interpreter;
+                      "localize=s@",       # pathes to access locally;
+                      "lresponse",         # solve target script option files locally;
+                      "nocopyright",       # suppress copyright message;
+                      "noinfo",            # suppress runtime informations;
+                      "nowarn",            # suppress runtime warnings;
+                      "quiet",             # suppress all runtime messages except of error ones;
+                      "trace:i",           # activate trace messages;
+          );
+
+# display copyright unless suppressed
+warn "\nrsc", $main::VERSION?" $main::VERSION":'', ". (c) J. Stenzel (perl\@jochen-stenzel.de) 1999. \n\n" unless exists $options{'nocopyright'} or exists $options{'quiet'};
+
+# check for a help request and an invalid call
+(exec("pod2text $0 | less") or die "[Fatal] exec() kann nicht aufgerufen werden: $!\n") if $options{'help'};
+
+# check usage
+die "[Fatal] Usage: $0 [options] -- <target host> <target script>\n" unless @ARGV>=2;
+
+# get interpreter setting, if any
+$callData{'interpreter'}=$options{'interpreter'} if exists $options{'interpreter'};
+
+# prepare the remotesite emulation package
+my $packageFile2handle=formatRemotescriptPart(<<EOM);
+
+package file2handle;
+
+# register (emulate open())
+sub TIEHANDLE
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] file2handle::TIEHANDLE() called.\\n";
+
+    # get parameters
+    my (\$pkg, \$handle, \$filename, \$orghandle)=\@_;
+
+    # print a registration hint
+    print "_FMAP_:_OP_:\$handle:\$filename\\n";
+ 
+    # get reply to synchronize fully
+    #!TRACE#1+256# my \$reply=<STDIN>;
+    #TRACE#1+256# my \$reply="_FMAP_:_OP_:\$handle:1::\\n";
+    \$reply=~/^_FMAP_:_OP_:\$handle:(.+?):(.*?):/;
+
+    # trace, if necessary
+    #TRACE#32# chomp(\$reply);
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply => status is \$1, package is \$pkg.\\n";
+
+    # all right?
+    \$!=\$2, return 0 unless \$1;
+
+    # register and reply object
+    bless([\$handle, \$filename, \$orghandle], \$pkg);
+  }
+
+# print
+sub PRINT
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] file2handle::PRINT() called.\\n";
+
+    # get object
+    my (\$me)=shift;
+
+    # print to STDOUT, adding a few additional informations
+    print "_FMAP_:_WR_:\$me->[0]:", \@_;
+  }
+
+# emulate syswrite()
+sub WRITE
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] file2handle::WRITE() called.\\n";
+
+    # get object
+    my (\$me)=shift;
+
+    # get parameters
+    my (\$buffer, \$length, \$offset)=\@_;
+    \$offset='-' unless defined \$offset;
+
+    # encode buffer, if necessary
+    \$buffer=Convert::UU::uuencode(\$buffer);
+    \$buffer=~s/\\n/CRCR/g;
+    my \$msgLength=length(\$buffer);
+
+    # send line to be written locally, pass handle, length and offset parameters
+    {local(\$^W)=0; print "_FMAP_:_WRITE_:\$me->[0]:\$length:\$msgLength:\$offset:\$buffer\\n";}
+
+    # get reply
+    my \$reply=<STDIN>;
+    \$reply=~/^_FMAP_:_WRITE_:\$me->[0]:(\\w*):(.*?):\$/;
+
+    # trace, if necessary
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply => \$1 (\$2)\\n";
+
+    # transfer error message
+    \$!=\$2;
+
+    # reply result
+    \$1;
+  }
+
+# read line
+sub READLINE
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] file2handle::READLINE() called.\\n";
+
+    # get object
+    my (\$me)=shift;
+
+    # request line locally
+    print "_FMAP_:_RL_:\$me->[0]:\\n";
+
+    # get reply
+    my \$reply=<STDIN>;
+    \$reply=~/^_FMAP_:_RL_:\$me->[0]:(.+?)\$/;
+
+    # trace, if necessary
+    #TRACE#32# chomp;
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply => |\$1|\\n";
+
+    # reply the record read
+    \$1 eq '_RSC_EOF_' ? undef : \$1;
+  }
+
+# low level read
+sub READ
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] file2handle::READ() called.\\n";
+
+    # get object
+    my (\$me)=shift;
+
+    # get parameters
+    my (\$bufRef)=\\\$_[0]; shift;
+    my (\$length, \$offset)=\@_;
+    \$offset='-' unless defined \$offset;
+
+    # request line locally, pass handle, length and offset parameters
+    {local(\$^W)=0; print "_FMAP_:_READ_:\$me->[0]:\$length:\$offset:\\n";}
+
+    # get reply
+    my \$reply=<STDIN>;
+    chop(\$reply);
+    \$reply=~/^_FMAP_:_READ_:\$me->[0]:(\\w*):(\\d+):(.+)/;
+
+    # store intermediate results
+    my (\$rc, \$msgLength, \$msg)=(\$1, \$2, \$3);
+
+    # fill buffer
+    \$\$bufRef=\$msg;
+    \$\$bufRef=~s/CRCR/\\n/g;
+
+    # decode buffer, if necessary
+    if (\$rc)
+      {
+       # decode ...
+       \$\$bufRef=Convert::UU::uudecode(\$\$bufRef);
+       # ... and check yourself
+       die "[BUG] Length differs.\\n" unless length(\$\$bufRef)==\$rc;
+      }
+
+    # trace, if necessary
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply => |\$rc| => |\$\$bufRef|\\n";
+
+    # reply the record read
+    \$rc eq '_RSC_EOF_' ? undef : \$rc;
+  }
+
+# unregister (emulate close())
+sub CLOSE
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] file2handle::CLOSE() called.\\n";
+
+    # get object
+    my (\$me)=shift;
+
+    # send command
+    print "_FMAP_:_CL_:\$me->[0]:\$me->[1]\\n";
+
+    # get reply
+    #!TRACE#1+256# my \$reply=<STDIN>;
+    #TRACE#1+256# my \$reply="_FMAP_:_CL_:\$me->[0]:1:\\n";
+    \$reply=~/^_FMAP_:_CL_:\$me->[0]:(.+?):/;
+
+    # trace, if necessary
+    #TRACE#32# chomp;
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply => |\$1|\\n";
+
+    # untie yourself
+    eval "untie \*\$me->[2]";
+
+    # reply received close() result
+    \$1;
+  }
+
+sub DESTROY
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] file2handle::DESTROY() called.\\n";
+
+    # get object
+    my (\$me)=shift;
+
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] Object [\$me->[0], \$me->[1], \$me->[2]] is destroyed.\\n";
+  }
+
+# module complete
+1;
+EOM
+
+# prepare the locking subclass which allows us to implement
+# local locking for the script running remotely
+my $packageAdmin__File__Lock=formatRemotescriptPart(<<EOM) if defined $adminFileLockAvailable;
+
+package Admin::File::Lock::rsc;
+ 
+use Admin::File::Lock;
+
+# base declaration to inherit whatever possible 
+\@ISA=qw(Admin::File::Lock);
+
+# constructor 
+sub new {Admin::File::Lock::new(\@_);}
+ 
+# locker
+sub lockFile
+  {
+    # function variables
+    my (\$back);
+
+    # init return code hash (to a success)
+    \$back->{'state'}=1;
+
+    # get parameters
+    my (\$me, \$file)=\@_;
+
+    # lock as usual unless the file is forced to be locked locally
+    return \$me->SUPER::lockFile(\$file) unless main::_rscLocalized(\$file);
+
+    # mark this object as a subclass one
+    \$me->{'locks'}{\$file}='_RSC_';
+
+    # lock locally
+    print "_RSC_:_FL_:_LC_:\$file\\n";
+    #!TRACE#1+256# my \$reply=<STDIN>;
+    #TRACE#1+256# my \$reply="_RSC_:_FL_:_LC_:1:0:\\n";
+
+    # trace, if necessary
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply\\n";
+
+    # set return values
+    unless (\$reply=~/^_RSC_:_FL_:_LC_:(\\d):([-\\d]+):/)
+      {\$back->{'state'}=0, \$back->{'errno'}=-1;}
+    else
+      {(\$back->{'state'}, \$back->{'errno'})=(\$1, \$2);}
+    
+    # reply success state
+    \$back;
+  }
+
+# check a lock
+sub lockCheck
+  {
+    # get parameters
+    my (\$me, \$file)=\@_;
+
+    # this maybe a local or an emulated lock
+    exists \$me->{'locks'}{\$file} and \$me->{'locks'}{\$file} eq '_RSC_' ? 1 : \$me->SUPER::checkLock(\$file);
+  }
+
+# realease a lock - this must be done interactively
+sub lockRelease
+  {
+    # get and check parameters
+    my (\$me, \$file)=\@_;
+
+    # anything to do?
+    return unless exists \$me->{'locks'}{\$file};
+    return \$me->SUPER::releaseLock(\$file) unless \$me->{'locks'}{\$file} eq '_RSC_';
+
+    # well, this file was locked locally - release it the same way
+    # (wait for reply to synchronize well)
+    delete \$me->{'locks'}{\$file};
+    print "_RSC_:_FL_:_RE_:\$file\\n";
+    #!TRACE#1+256# my \$reply=<STDIN>;
+    #TRACE#1+256# my \$reply="_RSC_:_FL_:_RE_\\n";
+
+    # trace, if necessary
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply\\n";
+  }
+
+
+# lockReleaseAll() should work directly because it simply calls lockRelease()
+
+1;
+ 
+EOM
+
+# prepare declaration of special rsc functions
+my $_rscFunctions=formatRemotescriptPart(<<EOM);
+
+# check if a file should be handled LOCALLY
+sub _rscLocalized
+ {
+  # check parameters
+  confess("Invalid call of _rscLocalized()") unless \@_==1;
+
+  # trace, if necessary
+  #TRACE#16# warn "[Trace] [\$\$] [R] \$_[0] is checked for localization (\@{\$_rscCallData->{'localize'}}).\\n";
+
+  # file test
+  if (\$_[0] ne '_')
+    {
+     #TRACE#16# warn "[Trace] [\$\$] [R] \$_[0] has ", (scalar(grep(\$_[0]=~/^\$_/, \@{\$_rscCallData->{'localize'}})) ? '' : 'not '), "to be localized.\\n";
+     return scalar(grep(\$_[0]=~/^\$_/, \@{\$_rscCallData->{'localize'}}));
+    }
+  else
+    {
+     #TRACE#16# warn "[Trace] [\$\$] [R] Handle _ is checked, current state is ", (exists \$_rscCallData->{'_'} and \$_rscCallData->{'_'} eq 'l' ? 1 : 0), " (\$_rscCallData->{'_'}).\\n";
+     return (exists \$_rscCallData->{'_'} and \$_rscCallData->{'_'} eq 'l' ? 1 : 0);
+    }
+ }
+
+# override filetest operators (unfortunately, this cannot be done directly yet)
+# if a FILE "_" is checked, results may be wrong
+sub _rscFiletest(\$;\$)
+ {
+  # trace, if necessary
+  #TRACE#16# warn "[Trace] [\$\$] [R] Replacement filetest is called.\\n";
+
+  # if nothing is passed to the operator, \$_ is default
+  \$_[1]=\$_ unless defined \$_[1];
+
+  # check where to perform the test
+  if (
+         (ref \\\$_[1] eq 'SCALAR' and _rscLocalized(\$_[1]))   # checks names which may be localized by path, after that, pseudo handles are checked;
+      or (ref tied \$_[1] eq 'file2handle')  	                # checks handles which may be localized by tie();
+     )
+    {
+     # trace, if necessary
+     #TRACE#16# warn "[Trace] [\$\$] [R] File check -\$_[0] ", ref \\\$_[1] eq 'SCALAR' ? \$_[1] : \$_[1]->[0], " is lokalized.\\n";
+
+     # do it locally
+     print join(':', "_RSC_:_FT_:_\$_[0]_", ref \\\$_[1] eq 'SCALAR' ? \$_[1] : \$_[1]->[0], "\\n");
+     #!TRACE#1+256# my \$reply=<STDIN>;
+     #TRACE#1+256# my \$reply="_RSC_:_FT_:_\$_[0]_:1:\\n";
+
+     # trace, if necessary
+     #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply\\n";
+
+     # store last handling state
+     \$_rscCallData->{'_'}='l';
+       
+     # reply result
+     \$reply=~/^_RSC_:_FT_:_\$_[0]_:(\\d):/;
+     return \$1;
+    }
+  else
+    {
+     # do it as usual - that means, here on the remote machine
+     my \$rc;
+     ref \\\$_[1] eq 'SCALAR' and \$_[1] ne '_' ? eval "\\\$rc=-\$_[0] '\$_[1]'" : eval "\\\$rc=-\$_[0] \$_[1]";
+
+     # trace, if necessary
+     #TRACE#16# warn "[Trace] [\$\$] [R] File check ", (ref \\\$_[1] eq 'SCALAR' and \$_[1] ne '_' ? "-\$_[0] '\$_[1]'" : "-\$_[0] \$_[1]"), " was called directly and replied \$rc.\\n";
+      
+     # store last handling state
+     \$_rscCallData->{'_'}='r';
+       
+     # reply result
+     return \$rc;
+    }
+ }
+
+EOM
+
+# prepare remote declaration of a new mkpath() function which CAN call File::Path::mkpath() LOCALLY
+my $override_File_Path_mkpath=formatRemotescriptPart(<<EOM);
+
+# make path - locally or remotely
+sub _rscMkpath
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] Replacement function for File::Path::mkpath() is called.\\n";
+
+    # fallback to File::Path::mkpath unless the passed file should be handled locally
+    return mkpath(\@_) unless _rscLocalized(\$_[0]);
+
+    # well, it SHOULD be made locally: perform this
+    print '_RSC_:_MP_:', join(':', ref \$_[0] ? join(\\0x7, \@{\$_[0]}) : \$_[0], \@_[1..\$#_]), "\\n";
+
+    # get result (a list of made directories) and reply it
+    #!TRACE#1+256# my \$reply=<STDIN>;
+    #TRACE#1+256# my \$reply="_RSC_:_MP_:1\\n";
+
+    # trace, if necessary
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply\\n";
+
+    # prepare and reply result
+    \$reply=~/^_RSC_:_MP_:(.+)\$/;
+    split(/:/, \$1);
+  }
+
+EOM
+
+# prepare overriding of open(), close(), opendir() etc.
+# (no need to override close() - perl calls file2handle::CLOSE() automatically if a handle is tied!)
+# Implement the following as soon as possible:
+#            ioctl fcntl
+my $override_open_and_close=formatRemotescriptPart(<<EOM);
+
+# declare (hopefully) overridden functions
+use subs qw(
+            open
+            stat lstat
+
+	    eof fileno
+
+            opendir readdir closedir
+
+            chmod chown
+            chdir
+           );
+
+# override open to work locally via tied handles
+sub open
+  {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] Calling overloaded open().\\n";
+
+    local(\$^W)=0;
+    #TRACE#16# warn "[Trace] [\$\$] [R] open(): \$_[1] is checked.\\n";
+    if (
+	        \@_==2
+        and \$_[1]=~/^\\s*((\\\+?[<>])?([^+|].*?[^|]))\$/
+        and defined \$3
+        and _rscLocalized(\$3)
+       )
+      {
+        #TRACE#16# warn "[Trace] [\$\$] [R] \$1 is opened as \$_rsc_f2h__.\\n";
+        return eval join('', "tie \*\$_[0], 'file2handle', ", \$_rsc_f2h__++, ", '\$1', ", join('::', __PACKAGE__, "\$_[0]"));
+      }
+    else
+      {
+        #TRACE#16# warn "[Trace] [\$\$] [R] CORE::open(\$_[0], '\$_[1]') is called.\\n";
+        return eval "CORE::open(\$_[0], '\$_[1]')";
+      }
+  }
+
+# chmod
+sub chmod
+ {
+  # trace, if necessary
+  #TRACE#16# warn "[Trace] [\$\$] [R] Calling overloaded chmod().\\n";
+
+  # declare function variables
+  my (\@locally, \@remotely, \$back);
+
+  # restore original mode value
+  my \$newMode=sprintf("0%lo", \$_[0]);
+
+  # check where to perform the test
+  foreach (\@_[1..\$#_]) {_rscLocalized(\$_) ? push(\@locally, \$_) : push(\@remotely, \$_);}
+
+  # perform remote operations by core, if necessary
+  if (\@remotely)
+   {
+    #TRACE#16# warn "[Trace] [\$\$] [R] CORE::chmod(", join(", ", \$newMode, \@remotely), ") is called.\\n";
+    \$back+=eval "CORE::chmod(\$newMode, \\\@remotely)";
+   }
+
+  # perform local operations by tunnel, if necessary
+  if (\@locally)
+   {
+    # send request and get result
+    print join(':', "_RSC_:_CHMOD_:\$newMode", \@locally, "\\n");
+    my \$reply=<STDIN>;
+
+    # trace, if necessary
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply\\n";
+
+    # update result
+    chomp(\$reply);
+    \$reply=~/^_RSC_:_CHMOD_:(.+?):/;
+    \$back+=\$reply;
+   }
+
+  # reply result
+  return \$back;
+ }
+
+# chown
+sub chown
+ {
+  # trace, if necessary
+  #TRACE#16# warn "[Trace] [\$\$] [R] Overloaded chown() is called.\\n";
+
+  # declare function variables
+  my (\@locally, \@remotely, \$back);
+
+  # check where to perform the test
+  foreach (\@_[2..\$#_]) {_rscLocalized(\$_) ? push(\@locally, \$_) : push(\@remotely, \$_);}
+
+  # perform remote operations by core, if necessary
+  if (\@remotely)
+   {
+    #TRACE#16# warn "[Trace] [\$\$] [R] CORE::chown(", join(", ", \@_[0, 1], \@remotely), ") is called.\\n";
+    \$back+=eval "CORE::chown(\$_[0], \$_[1], \\\@remotely)";
+   }
+
+  # perform local operations by tunnel, if necessary
+  if (\@locally)
+   {
+    # send request and get result
+    print join(':', "_RSC_:_CHOWN_", \@_[0, 1], \@locally, "\\n");
+    my \$reply=<STDIN>;
+
+    # trace, if necessary
+    #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply\\n";
+
+    # update result
+    chomp(\$reply);
+    \$reply=~/^_RSC_:_CHOWN_:(.+?):/;
+    \$back+=\$reply;
+   }
+
+  # reply result
+  return \$back;
+ }
+
+# stat()
+sub stat
+ {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] Overloaded stat() is called.\\n";
+
+    # if nothing is passed, \$_ is default
+    \$_[0]=\$_ unless defined \$_[0];
+
+    # check where to perform the test
+    if (
+	   (ref \\\$_[0] eq 'SCALAR' and _rscLocalized(\$_[0])) # checks names which may be localized by path;
+	or (ref tied \$_[0] eq 'file2handle')  	                # checks handles which may be localized by tie();
+       )
+      {
+	# do it locally
+	print join(':', "_RSC_:_STAT_:", ref \\\$_[0] eq 'SCALAR' ? \$_[0] : \$_[0]->[0], ":\\n");
+        my \$reply=<STDIN>;
+
+        # trace, if necessary
+        #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply\\n";
+
+	# store last handling state
+	\$_rscCallData->{'_'}='l';
+       
+        # reply result
+	chomp(\$reply);
+        \$reply=~/^_RSC_:_STAT_:(.+)/;
+        return split(/:/, \$1);
+      }
+    else
+      {
+	# do it as usual - that means, here on the remote machine
+	my \@rc;
+	ref \\\$_[0] eq 'SCALAR' ? eval "\\\@rc=CORE::stat('\$_[0]')" : eval "\\\@rc=CORE::stat(\$_[0])";
+
+	# store last handling state
+	\$_rscCallData->{'_'}='r';
+       
+	# reply result
+	return \@rc;
+      }
+ }
+
+# lstat()
+sub lstat
+ {
+    # trace, if necessary
+    #TRACE#16# warn "[Trace] [\$\$] [R] Overloaded lstat() is called.\\n";
+
+    # if nothing is passed, \$_ is default
+    \$_[0]=\$_ unless defined \$_[0];
+
+    # check where to perform the test
+    if (
+	   (ref \\\$_[0] eq 'SCALAR' and _rscLocalized(\$_[0])) # checks names which may be localized by path;
+	or (ref tied \$_[0] eq 'file2handle')  	                # checks handles which may be localized by tie();
+       )
+      {
+        # trace, if necessary
+        #TRACE#16# warn "[Trace] [\$\$] [R] Localizing lstat(\$_[0]).\\n";
+
+	# do it locally
+	print join(':', "_RSC_:_LSTAT_:", ref \\\$_[0] eq 'SCALAR' ? \$_[0] : \$_[0]->[0], ":\\n");
+        my \$reply=<STDIN>;
+
+        # trace, if necessary
+        #TRACE#32# warn "[Trace] [\$\$] [R] Received: \$reply\\n";
+
+	# store last handling state
+	\$_rscCallData->{'_'}='l';
+       
+        # reply result
+	chomp(\$reply);
+        \$reply=~/^_RSC_:_LSTAT_:(.+)/;
+        return split(/:/, \$1);
+      }
+    else
+      {
+        # trace, if necessary
+        #TRACE#16# warn "[Trace] [\$\$] [R] CORE::lstat(", (ref \\\$_[0] eq 'SCALAR' and \$_[0] ne '_' ? "'\$_[0]'" : "\$_[0]"), ") is called.\\n";
+
+        # store last handling state
+        \$_rscCallData->{'_'}='r';
+       
+	# do it as usual - that means, here on the remote machine
+	my \@rc;
+	ref \\\$_[0] eq 'SCALAR' and \$_[0] ne '_' ? eval "\\\@rc=CORE::lstat('\$_[0]')" : eval "\\\@rc=CORE::lstat(\$_[0])";
+        #TRACE#16# warn "[Trace] [\$\$] [R] CORE::lstat(", (ref \\\$_[0] eq 'SCALAR' and \$_[0] ne '_' ? "'\$_[0]'" : "\$_[0]"), ") replied ", join(':', \@rc), ". Error message: \$@\\n";
+	return \@rc;
+      }
+ }
+
+# emulate undefined overloaded functions - it does not work perfectly, so immediatly
+# implement real overridden functions!
+sub AUTOLOAD
+  {
+    # function variables
+    my (\$code, \@rc);
+
+    # declare special prototypes
+    my \%proto=(
+		pass    => {
+			   },
+		special => {
+			    chdir => "'\%s'",
+			   },
+	       );
+
+    # trim package
+    my \$function=\$AUTOLOAD;
+    \$function=~s/.*:://;
+
+    # inform local user
+    #TRACE#128# warn "[Warn] [R] \$function(\@_) is not overloaded yet, calling CORE function:\\n";
+
+    # prepare the core function call (take care of special prototypes)
+    if (exists \$proto{'pass'}{\$function} or exists \$proto{'special'}{\$function})
+      {
+	\$code=join('', "CORE::\$function(", join(', ', \@_), ")") if exists \$proto{'pass'}{\$function};
+	\$code=sprintf("CORE::\$function(\$proto{'special'}{\$function})", \@_) if exists \$proto{'special'}{\$function};
+      }
+    else
+      {\$code=join('', "CORE::\$function(", join(', ', map {"'\$_'"} \@_), ')');}
+
+    # now call core function
+    #TRACE#128# warn "              \$code ...\\n";
+    eval "\\\@rc=\$code";
+    #TRACE#128# warn "              \$code replied \@rc (", \$@ ? "error message: \$@" : 'without error message', ").\\n";
+    wantarray ? \@rc : \$rc[0];
+  }
+
+EOM
+
+# check target host by pinging it
+unless (exists $options{'trace'} and $options{'trace'}&1)
+ {
+  my $p=new Net::Ping('icmp');
+  die "[Fatal] Host $ARGV[0] does not respond.\n" unless $p->ping($ARGV[0]);
+ }
+
+# check scriptname, open script
+die "[Fatal] $ARGV[1] does not exist or cannot be read.\n" unless -r $ARGV[1];
+open(F, $ARGV[1]) or die "[Fatal] $ARGV[1] cannot be opened.\n";
+
+# store pathes to access locally
+$callData{'localize'}=$options{'localize'};
+
+# add packages
+push(@{$callData{'script'}}, $packageFile2handle);
+push(@{$callData{'script'}}, $packageAdmin__File__Lock) if defined $adminFileLockAvailable;
+push(@{$callData{'script'}}, "\npackage main;\nrequire 5.005;\n\$main::_runningUnderRSC=1;\nuse Admin::Oen;\n");
+
+# add init data for traced output (target script generated locally by tracelevel 1)
+push(@{$callData{'script'}}, join('', "\n\n\$main::_rscCallData->{'localize'}=[", join(', ', map {"'$_'"} @{$options{'localize'}}), "];\n\n")) if exists $options{'trace'} and $options{'trace'}&1;
+
+# insert message handler (without this one, a die() message is not passed to us)
+push(@{$callData{'script'}}, join('', '$SIG{__DIE__}=sub {warn $_[0]};', "\n"));
+
+# init a global counter and store it in a closure
+push(@{$callData{'script'}}, join('', 'my $_rsc_f2h__="A";', "\n"));
+
+# insert special rsc functions
+push(@{$callData{'script'}}, $_rscFunctions);
+
+# override functions
+push(@{$callData{'script'}}, $override_open_and_close);
+push(@{$callData{'script'}}, $override_File_Path_mkpath);
+
+# store script
+{
+  # scopies
+  my ($last, $pod, @codeTrace)=('');
+
+  # store
+  while (<F>)
+    {
+      # check the first line for an interpreter hook unless the user set one explixitly
+      $callData{'interpreter'}=$1, next if $.==1 and /^#!(.+)$/ and not exists $callData{'interpreter'};
+
+      # prepare locking redirection: remove direct usage of Admin::File::Lock
+      s/use\s+Admin::File::Lock.*;//g if defined $adminFileLockAvailable;
+
+      # skip empty and comment lines
+      next if /^\s+$/ or /^\s*#/;
+      
+      # skip POD
+      $pod=1, next if /^\s*=(pod|head|over|item|back)/i;
+      $pod=0, next if /^\s*=cut/i;
+      next if $pod;
+
+      # no need to transfer whitespaces this direction
+      s/^\s*//; s/\s*$//;
+
+      # solve default responsefiles HERE, if necessary (preparation)
+      @response{qw(default home)}=(defined $1, defined $2) if /^response\s*\((\s*1\s*)?(,\s*1\s*)?\)/; # Admin::Oen::response()
+      eval "%response=($1)" if /^argvFile\s*\(([^\)]+?)\)/;                                            # Getopt::ArgvFile::argvFile();
+
+      # correct "strict" pragma
+      s/(use\s+strict\s*;)/$1 no strict 'subs';/g;
+
+      # cover calls of Storable::store()
+      s/Storable::store\((.+?),\s*(['"])(.+?)\2\s*\)\s*;/{\nmy \$tmp=\$_rsc_f2h__++;\nprint "_FMAP_:_SP_:_ST_:_ST_:\$tmp:$3\\n";\nStorable::store_fd($1, *STDOUT);\nprint "\\n_FMAP_:_SP_:_ST_:_EN_:\$tmp:$3\\n";\n}\n/;
+
+      # prepare locking redirection: transfer Admin::File::Lock references into Admin::File::Lock::rsc ones
+      s/Admin::File::Lock/Admin::File::Lock::rsc/g if defined $adminFileLockAvailable;
+
+      # prepare mkpath redirection: transfer calls of (File::Path::)mkpath() into _rscMkpath()
+      s/(File::Path::)?mkpath\s*\(/_rscMkpath\(/g;
+
+      # prepare file test operator "overriding" - there are several cases
+      {
+       # init the flag character set
+       my $flagSet="[rwxoRWXOzsefdlpSbcugkTBMAC]";
+
+       # handle calls like -f <string>
+       s/(^|[\s\(\[\{])-($flagSet)\s+((['"]).+?(?<!\\)\4)/$1_rscFiletest\('$2', $3\)/g;
+
+       # try to handle more common cases
+       s/(^|[\s\(\[\{])-($flagSet)\s+(\S+?)([\)\]\s,;?:])/$1_rscFiletest\('$2', $3\)$4/g;
+      }
+
+      # add a code trace line, if necessary
+      if (exists $options{'trace'} and $options{'trace'}&64)
+	{
+	  # add tracecode line
+	  push(@codeTrace, $_);
+
+	  # time to print it out?
+	  if (!defined $last or ($last=~/;\s*$/ and not $last=~/#.*?;\s*$/))
+	    {
+	      # prepare and insert trace
+	      my $ncl=join("\n", map {join(' ', 'warn "[Trace] [$$] [R] [code]', quotemeta($_), '\n";')} @codeTrace);
+	      my $ncll=length("[Trace] [$$] [R] [code] $codeTrace[$#codeTrace]");
+	      push(@{$callData{'script'}}, "warn \"\\n\"; $ncl\nwarn \"\\n\", '-' x $ncll, \"\\n\\n\";\n");
+
+	      # clear buffer
+	      @codeTrace=();
+	    }
+	}
+
+      # cover calls of Storable::retrieve() (take care to have an open STDIN after this operation!)
+      s&(Storable::)?retrieve\(([\s'"]*.+?[\s'"]*)\)&(main::_rscLocalized($2) ? do {\nmy (\$target, \@retrieved)=($2);\n\$target=~s/^\\s*['"]//;\n\$target=~s/['"]\\s*\$//;\nprint "_FMAP_:_SP_:_RE_:_ST_:\$target:\\n";\nwhile (<STDIN>)\n{last if m#^_FMAP_:_SP_:_RE_:_EN_:\$target:#;\npush(\@retrieved, \$_);\n}\nmy (\$WHA, \$RHA)=(gensym(), gensym());\nmy \$pid=open2(\$RHA, \$WHA, '$callData{'interpreter'} -MStorable -e \"Storable::store_fd(Storable::retrieve_fd(*STDIN), *STDOUT)\"');\n\$retrieved[\$#retrieved]=~s/\\n\$//;\nprint \$WHA \@retrieved;\nclose(\$WHA);\nmy \$retrieved=\${Storable::retrieve_fd(\$RHA)};\nwaitpid(\$pid, 0);\n\$retrieved;\n} : Storable::retrieve($2))&;
+
+      # store line to determine trace output
+      $last=$_;
+
+      # store line
+      push(@{$callData{'script'}}, "$_\n");
+    }
+}
+close(F);
+
+# check if we know an interpreter now
+die "[Fatal] You did not set a target script interpreter.\n", ' ' x length('[Fatal] '), "Please use -interpreter.\n" unless exists $callData{'interpreter'};
+
+# trace, if necessary
+warn "[Trace] [$$] [L] Target script is executed by $callData{'interpreter'}.\n" if exists $options{'trace'} and $options{'trace'}&8;
+
+# solve default responsefiles HERE, if necessary (execution)
+{
+  # scopy
+  my @ARGVbuffer;
+
+  {
+    # make local copies of scriptname and arguments
+    local($0)=$ARGV[1];
+    local(@ARGV)=(exists $options{'lresponse'}) ? (@ARGV[2..$#ARGV]) : ();
+
+    # solve responses
+    argvFile(%response);
+
+    # save results
+    @ARGVbuffer=@ARGV;
+  }
+
+  # build in results
+  splice(@ARGV, 2, (exists $options{'lresponse'}) ? $#ARGV : 0, @ARGVbuffer);
+}
+
+# trace, if necessary
+warn "[Trace] [$$] [L] \@ARGV is transfered as\n", join("\n", map {"\t$_"} @ARGV[2..$#ARGV]), ".\n" if exists $options{'trace'} and $options{'trace'}&8;
+
+# store arguments
+$callData{'@ARGV'}=[@ARGV[2..$#ARGV]];
+
+# debug code (writes the built script locally)
+print(@{$callData{'script'}}), exit if exists $options{'trace'} and $options{'trace'}&1;
+
+# make locking object
+my $locking=new Admin::File::Lock(\%options) if defined $adminFileLockAvailable;
+		   
+# open remote connection (use sysopen to enable file system synchronisation between the child processes AND hardware)
+my ($WTR, $RDR)=(gensym(), gensym());
+my $pid=open3($WTR, $RDR, ">&STDERR", 'rsh', $ARGV[0], $callData{'interpreter'}, '-MStorable -MSymbol -MIPC::Open2 -MConvert::UU -e \'while (<STDIN>) {last if /^_RSC_:_SO_:/; push(@init, $_);} my ($WTR, $RDR)=(gensym(), gensym()); $pid=open2($RDR, $WTR, "' , $callData{'interpreter'}, ' -MStorable -e \"Storable::store_fd(Storable::retrieve_fd(*STDIN), *STDOUT)\""); print $WTR @init; undef @init; close($WTR); $_rscCallData=Storable::retrieve_fd(*$RDR); waitpid($pid, 0); @ARGV=@{$_rscCallData->{"\\@ARGV"}}; $|=1; eval join("", @{$_rscCallData->{"script"}}); warn "[Fatal] Script terminated with message:\n$@" if $@;\'');
+
+# call the script remotely
+Storable::store_fd(\%callData, $WTR);
+
+# flag that all initial data are sent now
+print $WTR "\n_RSC_:_SO_:\n";
+
+# reopen output buffer file
+# seek(OUT, 0, 0);
+
+# translate response
+my $inBlock;
+while (<$RDR>)
+  {
+    # trace, if necessary
+    warn "[Trace] [$$] [L] Received: $_" if exists $options{'trace'} and $options{'trace'}&4;
+
+    # print non signed lines immediately unless we are in a block mode
+    (print, next) unless /^_FMAP_:/ or /^_RSC_:/ or $inBlock;
+
+    # open files as necessary
+    if (/^_FMAP_:_OP_:(\w+):([-+<>.\/\w]+)/)
+      {
+        # scopy
+        my ($rc);
+
+        # perform the open() call
+	warn "[Trace] [$$] [L] Opening $2 as $1.\n" if exists $options{'trace'} and $options{'trace'}&8;
+        eval "\$rc=open($1, \"$2\") or warn \"[Error] [L] Target file $2 cannot be opened: $!.\n\"";
+
+        # reply result
+	print $WTR "_FMAP_:_OP_:$1:$rc:$!:\n";
+
+        # well done ...
+        next;
+      }
+
+    # print as necessary
+    if (s/^_FMAP_:_WR_:(\w+)://)
+      {
+	warn "[Trace] [$$] [L] Writing to $1.\n" if exists $options{'trace'} and $options{'trace'}&8;
+        eval "print $1 '$_'";
+        warn "[Error] [L] An output line could nit be written: $@\n" if $@;
+
+        # well done ...
+        next;
+      }
+
+    # read line as necessary (<>)
+    if (s/^_FMAP_:_RL_:(\w+)://)
+      {
+        # scopy
+        my ($rc);
+
+        # perform action
+	warn "[Trace] [$$] [L] <$1> is called (reading record/line in blocking mode).\n" if exists $options{'trace'} and $options{'trace'}&8;
+        eval "warn \"[Trace] [$$] [L] End of file $1 reached.\\n\" if eof($1)" if exists $options{'trace'} and $options{'trace'}&8;;
+        eval "\$rc=eof($1)?\"_RSC_EOF_\\n\":<$1>";
+        warn "[Error] [L] Could not read record/line: $@\n" if $@;
+
+        # reply result (may be undefined if we reached EOF)
+	{$^W=0; print $WTR "_FMAP_:_RL_:$1:$rc"; $^W=1;}
+
+        # well done ...
+        next;
+      }
+
+    # read buffer as necessary (read())
+    if (s/^_FMAP_:_READ_:(\w+):(\d+):((\d+)|-)://)
+      {
+        # scopy
+        my ($rc);
+
+	# set length and offset
+	my ($targetHandle, $length, $offset)=($1, $2, $3);
+	undef $offset if $offset eq '-';
+
+        # perform action
+	warn "[Trace] [$$] [L] Reading $length characters from $targetHandle", defined $offset ? ' (starting at position $offset)' : '', ".\n" if exists $options{'trace'} and $options{'trace'}&8;
+        eval "warn \"[Trace] [$$] [L] End of file $targetHandle reached.\\n\" if eof($targetHandle)" if exists $options{'trace'} and $options{'trace'}&8;;
+	my $buffer='';
+	{local($^W)=0; eval "\$rc=read($targetHandle, \$buffer, $length, $offset)";}
+        warn "[Error] [L] read() error: $@\n" if $@;
+
+	# encode buffer, if necessary
+	$buffer=Convert::UU::uuencode($buffer) if $rc;
+	$buffer=~s/\n/CRCR/g;
+	my $msgLength=length($buffer);
+
+	# trace, if necessary
+        warn "[Trace] [$$] [L] Sending $msgLength characters for original $rc.\n" if exists $options{'trace'} and $options{'trace'}&8;;
+
+        # reply result
+	{local($^W)=0; print $WTR "_FMAP_:_READ_:$targetHandle:$rc:$msgLength:$buffer\n";}
+
+        # well done ...
+        next;
+      }
+
+    # write buffer as necessary (via syswrite())
+    if (s/^_FMAP_:_WRITE_:(\w+):(\d+):(\d+):((\d+)|-):(.+)//)
+      {
+        # scopy
+        my ($rc);
+
+	# set length and offset
+	my ($targetHandle, $length, $msgLength, $offset, $buffer)=($1, $2, $3, $4, $6);
+	undef $offset if $offset eq '-';
+
+	# decode buffer, if necessary
+	if ($length)
+	  {
+	   # check yourself
+	   confess(join('', "Transfer message lengths differ ($msgLength!=", length($buffer),")")) unless $msgLength==length($buffer);
+
+	   # convert
+	   $buffer=~s/CRCR/\n/g;
+	   $buffer=Convert::UU::uudecode($buffer);
+	  }
+
+	# check yourself
+	confess(join('', "Target message lengths differ ($length!=", length($buffer),")")) unless $length==length($buffer);
+
+        # perform action
+	warn "[Trace] [$$] [L] Writing $length characters to $targetHandle", defined $offset ? ' (ab Position $offset)' : '', ".\n" if exists $options{'trace'} and $options{'trace'}&8;
+	{local($^W)=0; eval "\$rc=syswrite($targetHandle, \$buffer, $length, $offset)";}
+        warn "[Error] [L] syswrite() error: $@\n" if $@;
+
+        # reply result
+	{local($^W)=0; print $WTR "_FMAP_:_WRITE_:$targetHandle:$rc:$!:\n";}
+
+        # well done ...
+        next;
+      }
+
+    # close files as necessary
+    if (/^_FMAP_:_CL_:(\w+):([-+<>.\/\w]+)/)
+      {
+        # scopy
+        my ($rc);
+
+	# perform action
+	warn "[Trace] [$$] [L] Handle $1 ($2) is closed.\n" if exists $options{'trace'} and $options{'trace'}&8;
+        eval "(\$rc=close($1)) or warn \"[Error] [L] Target file $2 could not be closed.\n\"";
+
+	# send reply
+	print $WTR "_FMAP_:_CL_:$1:$rc:\n";
+
+        # well done ...
+        next;
+      }
+
+    # handle block start
+    if (/^_FMAP_:_SP_:_(\w+)_:_ST_:(\w+):([-.\/\w]+)/)
+      {
+        # first of all, this is an open() hint
+	warn "[Trace] [$$] [L] Block file $3 is opened as $2.\n" if exists $options{'trace'} and $options{'trace'}&8;
+        eval "open $2, \">$3\" warn \"[Error] [L] Target file $3 cannot be opened.\n\"";
+
+	# more, this is a block start ... mark it by storing the type
+	$inBlock=[$1];
+
+        # well done ...
+        next;
+      }
+
+    # handle block completion
+    if (/^_FMAP_:_SP_:_(\w+)_:_EN_:(\w+):([-.\/\w]+)/)
+      {
+	# check and reset type
+	warn "[Warn] [L] Opened block of type $inBlock->[0], but closed block of type $1.\n" unless $inBlock->[0] eq $1;
+
+        # perform finish, if necessary
+        if ($inBlock->[0] eq 'ST')
+          {
+	    warn "[Trace] [$$] [L] Block writing to $2.\n" if exists $options{'trace'} and $options{'trace'}&8;
+            eval "print $2 \@{\$inBlock->[1]}";
+            warn "[Error] [L] Block target file $3 cannot be written: $@\n" if $@;
+          }
+
+        # close block target file
+	warn "[Trace] [$$] [L] Block target file $3 (handle $1) is closed.\n" if exists $options{'trace'} and $options{'trace'}&8;
+        eval "close($2) or warn \"[Error] [L] Block target file $3 cannot be closed.\n\"";
+
+        # reset block flag
+        undef $inBlock;
+
+        # well done ...
+        next;
+      }
+
+    # handle a redirected Storable::retrieve() request
+    if (/^_FMAP_:_SP_:_RE_:_ST_:([-.\/\w]+?):/)
+      {
+	# scopy
+	my ($rc);
+
+        # perform action and reply result
+	warn "[Trace] [$$] [L] $1 is read via Storable::retrieve().\n" if exists $options{'trace'} and $options{'trace'}&8;
+        eval "\$rc=Storable::retrieve('$1')";
+	Storable::store_fd(\$rc, $WTR);
+	print $WTR "\n_FMAP_:_SP_:_RE_:_EN_:$1:\n";
+
+        # well done ...
+        next;
+      }
+
+    # handle a lock request
+    if (/^_RSC_:_FL_:_LC_:([-.\/\w]+)/)
+      {
+	# try to lock this file and reply result
+	warn "[Trace] [$$] [L] File $1 is locked.\n" if exists $options{'trace'} and $options{'trace'}&8;
+	my $rc=$locking->lockFile($1);
+
+        # reply result
+	print $WTR "_RSC_:_FL_:_LC_:$rc->{'state'}:", $rc->{'state'} ? 0 : $rc->{'errno'}, ":\n";
+
+        # well done ...
+        next;
+      }
+
+    # handle a release request
+    if (/^_RSC_:_FL_:_RE_:([-.\/\w]+)/)
+      {
+	# try to unlock this file and send a simple acknowlegment
+	warn "[Trace] [$$] [L] File $1 is released.\n" if exists $options{'trace'} and $options{'trace'}&8;
+	my $rc=$locking->lockRelease($1);
+
+        # reply result
+	print $WTR "_RSC_:_FL_:_RE_\n";
+
+        # well done ...
+        next;
+      }
+
+    # perform File::Path::mkpath() if requested
+    if (/^_RSC_:_MP_:([-.\/\w]+):(.+)$/)
+      {
+	# perform the call and reply its results
+	my @targets=split(\0x7, $1);
+	warn "[Trace] [$$] [L] Directory/directories @targets is/are made.\n" if exists $options{'trace'} and $options{'trace'}&8;
+
+        # reply result
+	print $WTR "_RSC_:_MP_:", join(':', mkpath(\@targets, split(/:/, $2))), "\n";
+	warn "[Trace] [$$] [L] Remote process was informed.\n" if exists $options{'trace'} and $options{'trace'}&8;
+
+        # well done ...
+        next;
+      }
+
+    # perform a filetest if requested
+    if (/^_RSC_:_FT_:_(\w)_:(.+):$/)
+      {
+	# perform the call and reply its results
+	my $rc;
+	warn "[Trace] [$$] [L] File check \"-$1 '$2'\" is performed.\n" if exists $options{'trace'} and $options{'trace'}&8;
+	eval "\$rc=-$1 '$2'";
+	warn "[Trace] [$$] [L] File check \"-$1 '$2'\" replied $rc ($@).\n" if exists $options{'trace'} and $options{'trace'}&8;
+        $rc=0 unless defined $rc;
+
+        # reply result
+	print $WTR "_RSC_:_FT_:_$1_:$rc:\n";
+
+        # well done ...
+        next;
+      }
+
+    # perform chmod() if requested
+    if (/^_RSC_:_CHMOD_:(\d+):(([^:]+:)+)$/)
+      {
+        # make list of target files
+        my @files=split(/:/, $2);
+
+	# perform the call and reply its results
+	my $rc;
+	warn "[Trace] [$$] [L] chmod($1, ", join(", ", @files), ") is performed.\n" if exists $options{'trace'} and $options{'trace'}&8;
+	eval "\$rc=chmod($1, \@files)";
+	warn "[Trace] [$$] [L] chmod($1, ", join(", ", @files), ") replied $rc.\n" if exists $options{'trace'} and $options{'trace'}&8;
+
+        # reply result
+	print $WTR "_RSC_:_CHMOD_:$rc:\n";
+
+        # well done ...
+        next;
+      }
+
+    # perform chown() if requested
+    if (/^_RSC_:_CHOWN_:(\w+):(\w+):(([^:]+:)+)$/)
+      {
+        # make list of target files
+        my @files=split(/:/, $3);
+
+	# perform the call and reply its results
+	my $rc;
+	warn "[Trace] [$$] [L] chown($1, $2, ", join(", ", @files), ") is called.\n" if exists $options{'trace'} and $options{'trace'}&8;
+	eval "\$rc=chown($1, $2, \@files)";
+	warn "[Trace] [$$] [L] chown($1, $2, ", join(", ", @files), ") replied $rc.\n" if exists $options{'trace'} and $options{'trace'}&8;
+
+        # reply result
+	print $WTR "_RSC_:_CHOWN_:$rc:\n";
+
+        # well done ...
+        next;
+      }
+
+    # perform stat() if requested
+    if (/^_RSC_:_STAT_:_(\w)_:$/)
+      {
+	# perform the call and reply its results
+	my @rc;
+	warn "[Trace] [$$] [L] stat($1) is performed.\n" if exists $options{'trace'} and $options{'trace'}&8;
+	eval "\@rc=stat($1)";
+	warn "[Trace] [$$] [L] stat($1) replied ", join(':', @rc), ".\n" if exists $options{'trace'} and $options{'trace'}&8;
+        @rc=() unless defined @rc;
+
+        # reply result
+	print $WTR "_RSC_:_STAT_:", join(':', @rc), "\n";
+
+        # well done ...
+        next;
+      }
+
+    # perform lstat() if requested
+    if (/^_RSC_:_LSTAT_:_(\w)_:$/)
+      {
+	# perform the call and reply its results
+	my @rc;
+	warn "[Trace] [$$] [L] lstat($1) is called.\n" if exists $options{'trace'} and $options{'trace'}&8;
+	eval "\@rc=lstat($1)";
+	warn "[Trace] [$$] [L] lstat($1) replied ", join(':', @rc), ".\n" if exists $options{'trace'} and $options{'trace'}&8;
+        @rc=() unless defined @rc;
+
+        # reply result
+	print $WTR "_RSC_:_LSTAT_:", join(':', @rc), "\n";
+
+        # well done ...
+        next;
+      }
+
+    # finally, if nothing else matches, this must be a block line
+    confess("Block code reached outside block ($_)") unless $inBlock;
+    warn "[Trace] [$$] [L] Block writing to $1.\n" if exists $options{'trace'} and $options{'trace'}&8;
+    push(@{$inBlock->[1]}, $_) if $inBlock->[0] eq 'ST';
+    warn "[Error] [L] A block record cannot be written: $@\n" if $@;
+  }
+
+# wait for remote process
+waitpid($pid, 0);
+
+# format a remotescript part passed via string
+sub formatRemotescriptPart
+ {
+  # get and check parameters
+  my ($scriptPart)=@_;
+  confess("Missing script part string parameter") unless $scriptPart;
+
+  # remove leading whitespaces except of newlines
+  $scriptPart=~s/^[^\S\n]*//gm;
+
+  # solve directives: OR conditions
+  if ($scriptPart=~/^#!?TRACE#((\d+\|?)+)#/m)
+    {
+     foreach my $traceNr (split('\|', $1))
+       {
+	$scriptPart=~s/^#TRACE#$traceNr#[^\S\n]*//gm if exists $options{'trace'} and $options{'trace'}&$traceNr;
+	$scriptPart=~s/^#!TRACE#$traceNr#[^\S\n]*//gm if not exists $options{'trace'} or not $options{'trace'}&$traceNr;
+       }
+    }
+  # solve directives: AND conditions
+  if ($scriptPart=~/^#!?TRACE#((\d+\+?)+)#/m)
+    {
+     # scopy
+     my ($rc)=(0);
+
+     # build the test statement
+     my $test=join(' and ', map {"\$options{'trace'}&$_"} split(/\+/, $1));
+
+     # evaluate it (once for both positive and negative tests), if necessary
+     eval "\$rc=1 if ($test)" if exists $options{'trace'};
+
+     # finally, perform necessary substitutions
+     $scriptPart=~s/^#TRACE#(\d+\+?)+#[^\S\n]*//gm if exists $options{'trace'} and $rc;
+     $scriptPart=~s/^#!TRACE#(\d+\+?)+#[^\S\n]*//gm if not exists $options{'trace'} or not $rc;
+    }
+
+  # remove all comment lines (including unresolved directives)
+  $scriptPart=~s/^#.*?\n//gm;
+
+  # remove all empty lines
+  $scriptPart=~s/^\n//gm;
+
+  # reply formatted string
+  $scriptPart;
+ }
+

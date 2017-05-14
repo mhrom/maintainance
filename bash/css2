@@ -1,0 +1,95 @@
+#!/bin/sh
+#
+# chkconfig: 2345 99 88
+# description: css
+#
+# /etc/init.d/css
+#
+# This is the init script for starting up the
+# marks_css_engine server
+#
+
+export JAVA_HOME="/app/tools/java"
+export PATH="/app/tools/java/bin:$PATH"
+
+#
+APP_HOME_DIR="/app/css"
+PATH_TO_CFG="/app/css/conf/css_application.conf"
+PIDDIR="/app/css"
+#
+LOG="/app/css/logs/error.log"
+JAVA_OPTS=""
+PID_FILE=RUNNING_PID
+#
+SERVICE_NAME="marks_css_engine"
+#
+export CSS_HOME=$APP_HOME_DIR
+#
+start(){
+  PID=$(cat ${PIDDIR}/${PID_FILE})
+  if [ ! ${PID} ]; then
+    echo "Starting ${SERVICE_NAME} ..."
+    cd ${APP_HOME_DIR}/bin && exec ${APP_HOME_DIR}/bin/marks_css_engine ${JAVA_OPTS} ${JMX_OPTS} -Dconfig.file=${PATH_TO_CFG} &>/dev/null &
+    sleep 3
+    PID=$(cat ${PIDDIR}/${PID_FILE})
+    echo "(pid...${PID}) ${SERVICE_NAME} started ..."
+    return 0
+  else
+    echo "(pid...${PID}) ${SERVICE_NAME} is already running ..."
+    return 2
+  fi
+}
+#
+stop(){
+  PID=$(cat ${PIDDIR}/${PID_FILE})
+  if [ ${PID} ]; then
+    echo "(pid...${PID}) ${SERVICE_NAME} stoping ..."
+    kill ${PID}
+    echo "${SERVICE_NAME} stopped ..."
+	rm -rf ${PIDDIR}/${PID_FILE}
+    return 0
+  else
+    echo "${SERVICE_NAME} is not running ..."
+    return 1
+  fi
+}
+#
+restart(){
+  stop
+  sleep 2
+  start
+}
+#
+status() {
+  PID=$(cat ${PIDDIR}/${PID_FILE})
+  if [ ${PID} ]; then
+    echo "(pid...${PID}) ${SERVICE_NAME} is already running ..."
+    return 0
+  else
+    echo "${SERVICE_NAME} is not running ..."
+    return 1
+  fi
+}
+
+#
+case "$1" in
+start)
+  start
+  exit $?
+  ;;
+stop)
+  stop
+  exit $?
+  ;;
+status)
+  status
+  exit $?
+  ;;
+restart)
+  restart
+  exit $?
+  ;;
+*)
+  echo $"Usage: $0 {start|stop|restart|status}"
+  exit 1
+esac
